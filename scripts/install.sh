@@ -137,7 +137,7 @@ tls13_h2() {
   local h=$1 out
   command -v openssl >/dev/null || return 2   # 2 = can't tell
   out=$(timeout 12 openssl s_client -connect "${h}:443" -servername "$h" \
-        -alpn h2 -tls1_3 </dev/null 2>/dev/null) || return 2
+        -alpn h2 -tls1_3 </dev/null 2>/dev/null | tr -d '\000') || return 2
   grep -qi 'Protocol *: *TLSv1.3' <<<"$out" || return 1
   grep -qi 'ALPN protocol: h2' <<<"$out" || return 1
   return 0
@@ -208,7 +208,11 @@ chmod 0440 /etc/sudoers.d/ipiran
 visudo -cqf /etc/sudoers.d/ipiran || die "generated sudoers file is invalid."
 
 head1 "5/7  configuration + keys"
-SECRET=$(tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 22)
+# Reuse the existing secret on re-runs so the bookmarked link keeps working.
+# (python avoids the tr|head SIGPIPE that silently kills set -o pipefail.)
+SECRET=""
+[[ -r $ENV_FILE ]] && SECRET=$(sed -n 's/^IPIRAN_SECRET_PATH=//p' "$ENV_FILE")
+[[ -n $SECRET ]] || SECRET=$(python3 -c 'import secrets; print(secrets.token_urlsafe(16))')
 cat > "$ENV_FILE" <<EOF
 IPIRAN_DATA_DIR=${DATA_DIR}
 IPIRAN_HOST=$( [[ -n $PANEL_OPEN ]] && echo 0.0.0.0 || echo 127.0.0.1 )
@@ -245,7 +249,6 @@ EnvironmentFile=${ENV_FILE}
 ExecStart=/usr/bin/python3 -m app.server
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
