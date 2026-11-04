@@ -22,24 +22,81 @@
 <main>
   <div id="banner" class="banner hidden"></div>
 
+  <!-- live numbers -->
   <section class="stats">
-    <div class="stat"><span class="stat-label">آنلاین</span><span class="stat-value" id="s-online">—</span></div>
-    <div class="stat"><span class="stat-label">امروز</span><span class="stat-value" id="s-today">—</span></div>
-    <div class="stat"><span class="stat-label">این ماه</span><span class="stat-value" id="s-month">—</span></div>
-    <div class="stat"><span class="stat-label">کاربران</span><span class="stat-value" id="s-count">—</span></div>
+    <div class="stat">
+      <span class="stat-label">آنلاین</span>
+      <span class="stat-value" id="s-online">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">سرعت لحظه‌ای</span>
+      <span class="stat-value speed" id="s-speed">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">امروز</span>
+      <span class="stat-value" id="s-today">—</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">این ماه</span>
+      <span class="stat-value" id="s-month">—</span>
+    </div>
   </section>
 
+  <!-- proof that traffic really goes through here -->
+  <section class="card">
+    <div class="card-head">
+      <h2>مسیر ترافیک</h2>
+      <button id="btn-path" class="ghost mini">بررسی دوباره</button>
+    </div>
+    <div id="verdict" class="verdict"></div>
+    <ol id="path" class="path"></ol>
+  </section>
+
+  <!-- ephemeral sniffing monitor -->
+  <section class="card">
+    <div class="card-head">
+      <h2>مونیتور زنده</h2>
+      <span id="mon-count" class="countdown hidden"></span>
+    </div>
+    <p class="hint" id="mon-help">
+      به‌طور عادی سرور <strong>هیچ لاگی</strong> از سایت‌هایی که باز می‌کنی نگه
+      نمی‌دارد. با این دکمه ۱۰ دقیقه پنجره‌ی نمایش باز می‌شود تا با چشم خودت
+      ببینی اسنیفینگ کار می‌کند: هر سطر نشان می‌دهد دستگاهت چه آدرسی خواسته و
+      سرور چه <strong>نامی</strong> از دل ترافیک بیرون کشیده. فقط در رم نوشته
+      می‌شود نه روی دیسک، <strong>آی‌پی هیچ کاربری ثبت نمی‌شود</strong>، و خودش
+      خاموش می‌شود و پاک می‌کند. روشن و خاموش کردنش Xray را ری‌استارت می‌کند،
+      پس اتصال‌ها یک لحظه قطع می‌شوند.
+    </p>
+    <div class="row">
+      <button id="mon-start" class="primary">روشن کردن (۱۰ دقیقه)</button>
+      <button id="mon-stop" class="ghost hidden">خاموش کردن</button>
+    </div>
+    <div id="mon-summary" class="mon-summary hidden"></div>
+    <div id="mon-table" class="mon-table"></div>
+  </section>
+
+  <!-- usage chart -->
   <section class="card">
     <div class="card-head"><h2>مصرف ۱۴ روز اخیر</h2></div>
     <div id="chart" class="chart"></div>
   </section>
 
+  <!-- clients -->
   <section class="card">
     <div class="card-head">
       <h2>کاربران</h2>
       <button id="btn-new" class="primary">+ کاربر جدید</button>
     </div>
     <div id="clients" class="clients"></div>
+  </section>
+
+  <!-- security -->
+  <section class="card">
+    <div class="card-head"><h2>امنیت</h2></div>
+    <p class="hint" id="sec-note"></p>
+    <div class="row">
+      <button id="btn-rotate" class="danger">عوض کردن لینک مخفی پنل</button>
+    </div>
   </section>
 </main>
 
@@ -60,7 +117,7 @@
     </div>
     <div class="dlg-actions">
       <button value="cancel" class="ghost">انصراف</button>
-      <button id="new-submit" value="ok" class="primary">ساختن</button>
+      <button value="ok" class="primary">ساختن</button>
     </div>
   </form>
 </dialog>
@@ -76,7 +133,7 @@
       <button id="share-close" class="ghost">بستن</button>
     </div>
     <p class="hint">این لینک را در v2rayNG یا Hiddify وارد کن. برای اینکه فقط
-      برنامه‌های ایرانی از تونل رد شوند، در برنامه حالت per-app یا مسیر geo را روشن کن.</p>
+      برنامه‌های ایرانی از تونل رد شوند، در برنامه حالت per-app را روشن کن.</p>
   </div>
 </dialog>
 

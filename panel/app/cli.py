@@ -64,6 +64,27 @@ def cmd_poll(args):
     print(json.dumps(service.poll(conn), ensure_ascii=False))
 
 
+def cmd_url(args):
+    """Print the real panel URL, read from the database rather than guessed,
+    so it stays right after the secret path is rotated."""
+    from . import config
+    conn = db.init()
+    secret = db.get_setting(conn, "secret_path")
+    host = db.get_setting(conn, "public_host") or "<server-ip>"
+    scheme = "https" if config.TLS_CERT and config.TLS_KEY else "http"
+    port = "" if config.PORT in (80, 443) else f":{config.PORT}"
+    print(f"{scheme}://{host}{port}/{secret}/")
+
+
+def cmd_rotate(args):
+    import secrets as _secrets
+    conn = db.init()
+    new = _secrets.token_urlsafe(16)
+    db.set_setting(conn, "secret_path", new)
+    print("new secret path:", new)
+    print("restart the panel for it to take effect: systemctl restart ipiran-panel")
+
+
 def cmd_add(args):
     conn = db.init()
     c = service.create_client(conn, args.label, args.quota_gb, args.expire_days)
@@ -92,6 +113,9 @@ def build_parser():
     rn.set_defaults(func=cmd_render)
 
     sub.add_parser("poll", help="drain counters once").set_defaults(func=cmd_poll)
+    sub.add_parser("url", help="print the panel URL").set_defaults(func=cmd_url)
+    sub.add_parser("rotate-secret", help="change the panel's secret path") \
+       .set_defaults(func=cmd_rotate)
 
     ad = sub.add_parser("add-client", help="create a client")
     ad.add_argument("label")

@@ -11,13 +11,16 @@ counters on an interval.
 from __future__ import annotations
 
 import json
+import secrets
+import ssl
 import threading
 import time
+from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import config, db, links, service
+from . import config, db, links, monitor, service
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -39,10 +42,24 @@ class Panel(ThreadingHTTPServer):
         self.secret = secret
         self.lock = threading.Lock()
         self._conn = db.connect()
+        self._hits: dict[str, list] = defaultdict(lambda: [0, 0.0])
 
     def db(self):
         """Serialize DB access; sqlite connection is shared across threads."""
         return self._conn
+
+    def allow(self, ip: str) -> bool:
+        """Fixed-window rate limit, enough to make scanning for the secret
+        path impractical without needing any state beyond a counter."""
+        with self.lock:
+            bucket = self._hits[ip]
+            now = time.monotonic()
+            if now - bucket[1] > 10:
+                bucket[0], bucket[1] = 0, now
+            bucket[0] += 1
+            if len(self._hits) > 4096:
+                self._hits.clear()
+            return bucket[0] <= config.RATE_LIMIT
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -75,7 +92,10 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        # Keeps the secret path out of Referer headers if a link ever points out.
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "geolocation=(), camera=(), microphone=()")
         self.end_headers()
         self.wfile.write(body)
 
@@ -99,11 +119,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- routing ----------------------------------------------------------
     def do_GET(self):
+        if not self.server.allow(self.client_address[0]):
+            return self._bytes(b"", "text/plain", status=429)
         parsed = urlparse(self.path)
         ok, rel = self._secret_ok(parsed.path)
         if not ok:
             return self._not_found()
-        qs = parse_qs(parsed.query)
         try:
             if rel == "/":
                 return self._serve_asset("index.html")
@@ -111,23 +132,49 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_asset(rel.lstrip("/"))
             if rel == "/api/state":
                 return self._json(self._with_db(service.dashboard_state))
+            if rel == "/api/path":
+                peer = self.client_address[0]
+                return self._json(
+                    self._with_db(lambda c: service.connection_path(c, peer))
+                )
+            if rel == "/api/monitor":
+                return self._json(self._with_db(service.monitor_feed))
             if rel.startswith("/api/clients/") and rel.endswith("/link"):
                 cid = int(rel.split("/")[3])
                 link = self._with_db(lambda c: service.client_share_link(c, cid))
                 return self._bytes(link.encode(), "text/plain; charset=utf-8")
-        except (service.ServiceError, links.LinkError) as exc:
+        except (service.ServiceError, links.LinkError, monitor.MonitorError) as exc:
             return self._json({"detail": str(exc)}, status=400)
         except Exception as exc:  # noqa: BLE001
             return self._json({"detail": str(exc)}, status=500)
         return self._not_found()
 
     def do_POST(self):
+        if not self.server.allow(self.client_address[0]):
+            return self._bytes(b"", "text/plain", status=429)
         parsed = urlparse(self.path)
         ok, rel = self._secret_ok(parsed.path)
         if not ok:
             return self._not_found()
         body = self._read_body()
         try:
+            if rel == "/api/monitor/start":
+                minutes = int(body.get("minutes") or monitor.DEFAULT_MINUTES)
+                return self._json(
+                    self._with_db(lambda c: service.monitor_start(c, minutes))
+                )
+            if rel == "/api/monitor/stop":
+                return self._json(self._with_db(service.monitor_stop))
+            if rel == "/api/secret/rotate":
+                new = secrets.token_urlsafe(16)
+
+                def _rotate(conn):
+                    db.set_setting(conn, "secret_path", new)
+                    return {"ok": True, "secret": new}
+
+                result = self._with_db(_rotate)
+                self.server.secret = new
+                return self._json(result)
             if rel == "/api/clients":
                 client = self._with_db(lambda c: service.create_client(
                     c,
@@ -151,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": True})
                 self._with_db(lambda c: service.update_client(c, cid, **body))
                 return self._json({"ok": True})
-        except (service.ServiceError, links.LinkError) as exc:
+        except (service.ServiceError, links.LinkError, monitor.MonitorError) as exc:
             return self._json({"detail": str(exc)}, status=400)
         except Exception as exc:  # noqa: BLE001
             return self._json({"detail": str(exc)}, status=500)
@@ -204,10 +251,19 @@ def run() -> None:
     conn.close()
 
     server = Panel((config.HOST, config.PORT), secret)
+
+    scheme = "http"
+    if config.TLS_CERT and config.TLS_KEY:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(config.TLS_CERT, config.TLS_KEY)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+
     threading.Thread(target=_poller, args=(server,), daemon=True).start()
 
     url_host = config.HOST if config.HOST != "0.0.0.0" else "<server-ip>"
-    print(f"panel on http://{url_host}:{config.PORT}/{secret}/")
+    print(f"panel on {scheme}://{url_host}:{config.PORT}/{secret}/", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

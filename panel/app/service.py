@@ -5,12 +5,13 @@ A client's `email` is its stable identity inside Xray and never changes.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 import sqlite3
 import time
 from typing import Any
 
-from . import config, db, links, xray
+from . import config, db, links, monitor, xray
 
 GIB = 1024 ** 3
 EMAIL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,40}@ipiran$")
@@ -20,23 +21,46 @@ class ServiceError(RuntimeError):
     pass
 
 
+# Live rates, derived from the gap between two counter drains. Kept in memory
+# only: this is a speedometer, not a history.
+_speed: dict[str, dict[str, float]] = {}
+_speed_ts: float = 0.0
+
+# Online device counts are read by a subprocess, so the poller caches them
+# instead of every page refresh paying for it.
+_online_cache: dict[str, int] = {}
+_online_ts: float = 0.0
+
+
+def _online(max_age: float = 20.0) -> dict[str, int]:
+    global _online_cache, _online_ts
+    if time.monotonic() - _online_ts < max_age:
+        return _online_cache
+    try:
+        _online_cache = xray.online_counts()
+    except xray.XrayError:
+        _online_cache = {}
+    _online_ts = time.monotonic()
+    return _online_cache
+
+
 # ---------------------------------------------------------------------------
 # reading
 # ---------------------------------------------------------------------------
 
 def dashboard_state(conn: sqlite3.Connection) -> dict[str, Any]:
     settings = db.all_settings(conn)
-    try:
-        online = xray.online_counts()
-    except xray.XrayError:
-        online = {}
+    online = _online()
 
     now = int(time.time())
     clients = []
     for row in db.rows(conn.execute("SELECT * FROM clients ORDER BY id DESC")):
         quota = row["quota_bytes"]
         used = row["used_bytes"]
+        rate = _speed.get(row["email"], {})
         clients.append({
+            "up_bps": round(rate.get("up", 0.0)),
+            "down_bps": round(rate.get("down", 0.0)),
             "id": row["id"],
             "email": row["email"],
             "label": row["label"] or row["email"].split("@")[0],
@@ -76,6 +100,8 @@ def dashboard_state(conn: sqlite3.Connection) -> dict[str, Any]:
         "today_bytes": today_bytes,
         "month_bytes": month_bytes,
         "all_time_bytes": totals,
+        "up_bps": round(sum(r.get("up", 0.0) for r in _speed.values())),
+        "down_bps": round(sum(r.get("down", 0.0) for r in _speed.values())),
         "usage": usage_history(conn),
         "configured": bool(settings.get("reality_private_key")
                            and settings.get("public_host")),
@@ -83,6 +109,150 @@ def dashboard_state(conn: sqlite3.Connection) -> dict[str, Any]:
         "sni": settings.get("reality_sni", ""),
         "public_host": settings.get("public_host", ""),
         "listen_port": settings.get("listen_port", "443"),
+        "monitor": {
+            "active": monitor.is_active(conn),
+            "seconds_left": monitor.seconds_left(conn),
+            "summary": monitor.summary(),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# traffic path: what the connection actually goes through
+# ---------------------------------------------------------------------------
+
+def _is_local(ip: str, public_host: str) -> bool:
+    if ip == public_host:
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_private or addr.is_link_local
+
+
+def connection_path(conn: sqlite3.Connection, peer_ip: str) -> dict[str, Any]:
+    """Describe the real chain a packet takes, read from the live config, plus
+    a verdict on whether *this* browser is currently inside the tunnel.
+
+    The verdict works because the panel is served by the same server that
+    terminates the tunnel: if your traffic is going through it, the source
+    address the panel sees is the server itself, not your ISP address.
+    """
+    settings = db.all_settings(conn)
+    public_host = settings.get("public_host", "")
+    sni = settings.get("reality_sni", "")
+    port = settings.get("listen_port", "443")
+
+    inside = _is_local(peer_ip, public_host)
+    try:
+        cfg = xray.build_config(conn)
+        inbound = cfg["inbounds"][0]
+        sniffing = inbound["sniffing"]
+        reality = inbound["streamSettings"]["realitySettings"]
+        dns = cfg["dns"]["servers"]
+        egress = next(o for o in cfg["outbounds"] if o["tag"] == "direct")
+        blocked = [r.get("ruleTag") for r in cfg["routing"]["rules"]]
+    except Exception:  # noqa: BLE001 - diagram must never break the page
+        return {
+            "inside_tunnel": inside,
+            "your_ip": peer_ip,
+            "exit_ip": public_host,
+            "steps": [],
+        }
+
+    return {
+        "inside_tunnel": inside,
+        "your_ip": peer_ip,
+        "exit_ip": public_host,
+        "steps": [
+            {
+                "key": "device",
+                "title": "دستگاه تو",
+                "detail": (f"از دید سرور: {public_host} (خود سرور)" if inside
+                           else f"آی‌پی واقعی تو: {peer_ip}"),
+                "note": ("ترافیکت از تونل رد می‌شود، پس اپراتور آی‌پی مقصد "
+                         "واقعی را نمی‌بیند."
+                         if inside else
+                         "این صفحه را بیرون از تونل باز کرده‌ای."),
+                "ok": inside,
+            },
+            {
+                "key": "disguise",
+                "title": "استتار REALITY",
+                "detail": f"پورت {port} با نام {reality['serverNames'][0]}",
+                "note": ("برای اپراتور، ترافیک شبیه بازدید از "
+                         f"{sni} است و قابل تشخیص نیست."),
+                "ok": True,
+            },
+            {
+                "key": "sniff",
+                "title": "اسنیفینگ",
+                "detail": ("روشن برای " + "، ".join(sniffing["destOverride"])
+                           if sniffing["enabled"] else "خاموش"),
+                "note": ("نام مقصد روی سرور خوانده می‌شود، پس درخواست DNS "
+                         "دستگاهت به اپراتور نمی‌رسد."),
+                "ok": bool(sniffing["enabled"]) and not sniffing["routeOnly"],
+            },
+            {
+                "key": "dns",
+                "title": "حل نام با DNS سرور",
+                "detail": "، ".join(str(s) for s in dns),
+                "note": "آدرس سایت‌های ایرانی از داخل ایران حل می‌شود.",
+                "ok": True,
+            },
+            {
+                "key": "exit",
+                "title": "خروج به اینترنت",
+                "detail": f"با آی‌پی {public_host}",
+                "note": ("سایت‌ها همین آی‌پی را می‌بینند، نه آی‌پی تو. "
+                         "دسترسی به شبکه‌ی داخلی سرور بسته است."),
+                "ok": egress["protocol"] == "freedom",
+            },
+        ],
+        "blocked_rules": [r for r in blocked if r],
+    }
+
+
+# ---------------------------------------------------------------------------
+# ephemeral monitor
+# ---------------------------------------------------------------------------
+
+def monitor_start(conn: sqlite3.Connection, minutes: int) -> dict[str, Any]:
+    monitor.arm(conn, minutes)
+    try:
+        xray.write_config(conn)
+        xray.restart()
+    except Exception:
+        # Put the config back as well, not just the flag, so the file on disk
+        # never claims logging is on while the panel thinks it is off.
+        monitor.disarm(conn)
+        try:
+            xray.write_config(conn)
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+    return {"ok": True, "seconds_left": monitor.seconds_left(conn)}
+
+
+def monitor_stop(conn: sqlite3.Connection) -> dict[str, Any]:
+    monitor.disarm(conn)
+    xray.write_config(conn)
+    xray.restart()
+    return {"ok": True}
+
+
+def monitor_feed(conn: sqlite3.Connection) -> dict[str, Any]:
+    if monitor.is_active(conn):
+        if monitor.drain() == "too_big":
+            monitor_stop(conn)
+            return {"active": False, "entries": [],
+                    "error": "حجم لاگ از حد گذشت؛ مونیتور خاموش شد."}
+    return {
+        "active": monitor.is_active(conn),
+        "seconds_left": monitor.seconds_left(conn),
+        "summary": monitor.summary(),
+        "entries": monitor.entries(),
     }
 
 
@@ -226,10 +396,37 @@ def client_share_link(conn: sqlite3.Connection, client_id: int) -> str:
 
 def poll(conn: sqlite3.Connection) -> dict[str, Any]:
     """Drain counters into the DB, update online timestamps, enforce limits."""
+    global _speed, _speed_ts
+
+    # Close an expired monitor window before anything else.
+    if monitor.active_until(conn) and not monitor.is_active(conn):
+        try:
+            monitor_stop(conn)
+        except Exception:  # noqa: BLE001
+            pass
+    elif monitor.is_active(conn):
+        if monitor.drain() == "too_big":
+            try:
+                monitor_stop(conn)
+            except Exception:  # noqa: BLE001
+                pass
+
     try:
         traffic = xray.pull_traffic(reset=True)
     except xray.XrayError as exc:
         return {"ok": False, "error": str(exc)}
+
+    # Counters were just reset, so this interval's bytes are the rate.
+    mono = time.monotonic()
+    elapsed = mono - _speed_ts if _speed_ts else 0.0
+    if 0.5 < elapsed < 600:
+        _speed = {
+            email: {"up": amt["up"] / elapsed, "down": amt["down"] / elapsed}
+            for email, amt in traffic.items()
+        }
+    else:
+        _speed = {}
+    _speed_ts = mono
 
     now = int(time.time())
     today = time.strftime("%Y-%m-%d", time.gmtime(now))
@@ -252,10 +449,14 @@ def poll(conn: sqlite3.Connection) -> dict[str, Any]:
             (row["id"], today, amt["up"], amt["down"]),
         )
 
+    global _online_cache, _online_ts
     try:
-        for email in xray.online_counts():
-            conn.execute("UPDATE clients SET last_seen = ? WHERE email = ?",
-                         (now, email))
+        _online_cache = xray.online_counts()
+        _online_ts = time.monotonic()
+        for email, count in _online_cache.items():
+            if count:
+                conn.execute("UPDATE clients SET last_seen = ? WHERE email = ?",
+                             (now, email))
     except xray.XrayError:
         pass
 

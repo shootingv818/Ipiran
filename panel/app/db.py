@@ -56,6 +56,8 @@ DEFAULT_SETTINGS = {
     "reality_sni": "www.varzesh3.com",
     "reality_target_port": "443",
     "panel_title": "پنل آیپی ایران",
+    # Epoch second the ephemeral traffic monitor closes. 0 = off.
+    "monitor_until": "0",
 }
 
 
@@ -80,12 +82,11 @@ def init() -> sqlite3.Connection:
             "ON CONFLICT(key) DO NOTHING",
             (key, value),
         )
-    # A panel secret path is generated once and kept in the DB, unless the
-    # environment pins one explicitly.
-    if config.SECRET_PATH:
-        set_setting(conn, "secret_path", config.SECRET_PATH)
-    elif not get_setting(conn, "secret_path"):
-        set_setting(conn, "secret_path", secrets.token_urlsafe(16))
+    # The secret path is seeded from the environment on first setup and then
+    # owned by the database, so rotating it from the panel sticks.
+    if not get_setting(conn, "secret_path"):
+        set_setting(conn, "secret_path",
+                    config.SECRET_PATH or secrets.token_urlsafe(16))
     try:
         config.DB_PATH.chmod(0o600)
     except OSError:
