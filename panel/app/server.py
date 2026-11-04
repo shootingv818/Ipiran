@@ -232,8 +232,24 @@ class Handler(BaseHTTPRequestHandler):
         if not str(target).startswith(str(WEB_DIR.resolve())) or not target.is_file():
             return self._not_found()
         ctype = _CONTENT_TYPES.get(target.suffix, "application/octet-stream")
-        cache = "no-store" if target.suffix in (".html",) else "max-age=86400"
-        self._bytes(target.read_bytes(), ctype, extra={"Cache-Control": cache})
+        if target.suffix == ".html":
+            # Stamp the asset URLs with each file's mtime so that after an
+            # update the browser requests a new URL and cannot serve a stale
+            # app.js/style.css against fresh HTML. The HTML itself is never
+            # cached. This removes any need to clear the browser cache.
+            body = self._versioned_html(target)
+            return self._bytes(body, ctype, extra={"Cache-Control": "no-store"})
+        self._bytes(target.read_bytes(), ctype, extra={"Cache-Control": "max-age=86400"})
+
+    def _versioned_html(self, target: Path) -> bytes:
+        html = target.read_text(encoding="utf-8")
+        for asset in ("app.js", "style.css", "vendor/qrcode.js"):
+            try:
+                version = int((WEB_DIR / asset).stat().st_mtime)
+            except OSError:
+                continue
+            html = html.replace(f'"{asset}"', f'"{asset}?v={version}"')
+        return html.encode("utf-8")
 
     def log_message(self, *args):  # silence default stderr logging
         pass
