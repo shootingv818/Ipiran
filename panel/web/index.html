@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>پنل آیپی ایران</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="server-dot"></span>
+    <h1 id="title">پنل آیپی ایران</h1>
+  </div>
+  <div class="top-actions">
+    <button id="btn-refresh" class="ghost" title="به‌روزرسانی">↻</button>
+    <button id="btn-apply" class="ghost">اعمال و ری‌استارت</button>
+  </div>
+</header>
+
+<main>
+  <div id="banner" class="banner hidden"></div>
+
+  <section class="stats">
+    <div class="stat"><span class="stat-label">آنلاین</span><span class="stat-value" id="s-online">—</span></div>
+    <div class="stat"><span class="stat-label">امروز</span><span class="stat-value" id="s-today">—</span></div>
+    <div class="stat"><span class="stat-label">این ماه</span><span class="stat-value" id="s-month">—</span></div>
+    <div class="stat"><span class="stat-label">کاربران</span><span class="stat-value" id="s-count">—</span></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>مصرف ۱۴ روز اخیر</h2></div>
+    <div id="chart" class="chart"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>کاربران</h2>
+      <button id="btn-new" class="primary">+ کاربر جدید</button>
+    </div>
+    <div id="clients" class="clients"></div>
+  </section>
+</main>
+
+<!-- new user -->
+<dialog id="dlg-new">
+  <form id="form-new" method="dialog">
+    <h3>کاربر جدید</h3>
+    <label>نام
+      <input name="label" required placeholder="مثلاً گوشی علی" autocomplete="off">
+    </label>
+    <div class="two">
+      <label>حجم (گیگ، ۰ = نامحدود)
+        <input name="quota_gb" type="number" min="0" step="1" placeholder="۲۰">
+      </label>
+      <label>مدت (روز، خالی = پیش‌فرض)
+        <input name="expires_days" type="number" min="1" step="1" placeholder="۳۰">
+      </label>
+    </div>
+    <div class="dlg-actions">
+      <button value="cancel" class="ghost">انصراف</button>
+      <button id="new-submit" value="ok" class="primary">ساختن</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- share -->
+<dialog id="dlg-share">
+  <div class="share">
+    <h3 id="share-name">کانفیگ</h3>
+    <div id="share-qr" class="qr"></div>
+    <textarea id="share-link" rows="3" readonly></textarea>
+    <div class="dlg-actions">
+      <button id="share-copy" class="primary">کپی لینک</button>
+      <button id="share-close" class="ghost">بستن</button>
+    </div>
+    <p class="hint">این لینک را در v2rayNG یا Hiddify وارد کن. برای اینکه فقط
+      برنامه‌های ایرانی از تونل رد شوند، در برنامه حالت per-app یا مسیر geo را روشن کن.</p>
+  </div>
+</dialog>
+
+<script src="vendor/qrcode.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
