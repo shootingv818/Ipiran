@@ -271,6 +271,15 @@ run_ctl set reality_sni "$SNI"
 run_ctl init-keys 2>/dev/null || log "REALITY keys already present, keeping them"
 run_ctl render
 
+# Binding a port below 1024 (e.g. 80) as the non-root panel user needs this
+# one capability. Harmless for high ports.
+CAP_LINES=""
+if [[ ${PANEL_PORT} -lt 1024 ]]; then
+  CAP_LINES=$'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE'
+fi
+# Remove any stale drop-in from earlier manual attempts so it cannot conflict.
+rm -rf /etc/systemd/system/ipiran-panel.service.d
+
 cat > /etc/systemd/system/ipiran-panel.service <<EOF
 [Unit]
 Description=Ipiran panel
@@ -289,6 +298,7 @@ ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=${DATA_DIR} ${XRAY_CONF_DIR}
+${CAP_LINES}
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -330,11 +340,14 @@ log "firewall active"
 
 head1 "done"
 SCHEME=$( [[ $USE_HTTPS -eq 1 ]] && echo https || echo http )
+# Omit the port from the URL for the standard 80/443 so it reads cleanly.
+PORT_SUFFIX=":${PANEL_PORT}"
+{ [[ $PANEL_PORT -eq 80 && $USE_HTTPS -eq 0 ]] || [[ $PANEL_PORT -eq 443 && $USE_HTTPS -eq 1 ]]; } && PORT_SUFFIX=""
 if [[ -n $PANEL_OPEN ]]; then
   cat <<EOF
 Panel URL (bookmark it, the secret path is the only key):
 
-  ${SCHEME}://${HOST}:${PANEL_PORT}/${SECRET}/
+  ${SCHEME}://${HOST}${PORT_SUFFIX}/${SECRET}/
 
 EOF
   if [[ $USE_HTTPS -eq 1 ]]; then
