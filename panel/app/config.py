@@ -35,8 +35,18 @@ HOST: str = os.environ.get("IPIRAN_HOST", "127.0.0.1")
 PORT: int = int(os.environ.get("IPIRAN_PORT", "8777"))
 
 # Secret path prefix. The whole panel lives under /<SECRET>/ so that a bare
-# scan of the IP and port finds nothing. Generated on first setup.
+# scan of the IP and port finds nothing. Seeded here on first setup, then
+# owned by the database so it can be rotated from the panel.
 SECRET_PATH: str = os.environ.get("IPIRAN_SECRET_PATH", "")
+
+# Optional TLS. Without it the secret path travels in clear text to anyone
+# watching the network between you and the server.
+TLS_CERT: str = os.environ.get("IPIRAN_TLS_CERT", "")
+TLS_KEY: str = os.environ.get("IPIRAN_TLS_KEY", "")
+
+# Requests allowed per IP per 10 seconds, to slow down anyone scanning for
+# the secret path.
+RATE_LIMIT: int = int(os.environ.get("IPIRAN_RATE_LIMIT", "90"))
 
 # How often the background worker drains counters and refreshes online state.
 POLL_SECONDS: int = int(os.environ.get("IPIRAN_POLL_SECONDS", "15"))

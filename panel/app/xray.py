@@ -21,7 +21,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from . import config
+from . import config, monitor
 
 # REALITY only supports RAW / XHTTP / gRPC; "raw" is the current name for
 # what used to be called "tcp".
@@ -75,11 +75,14 @@ def build_config(conn: sqlite3.Connection) -> dict[str, Any]:
     target_port = s.get("reality_target_port", "443")
     return {
         "log": {
-            # No access log: it would otherwise record every client IP and
-            # every hostname they reach, on a server inside Iran.
+            # The access log is what records client source addresses, so it
+            # stays off permanently on a server inside Iran. The panel's
+            # live monitor redirects the *diagnostic* log instead, to a
+            # RAM-backed file, for a short self-expiring window.
             "access": "none",
             "loglevel": "warning",
             "dnsLog": False,
+            **monitor.log_overrides(conn),
         },
         "api": {
             "tag": "api",

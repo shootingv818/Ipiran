@@ -28,6 +28,7 @@ PORT=443
 SNI=""
 PANEL_PORT=8777
 PANEL_OPEN=""   # CIDR allowed to reach the panel; empty = localhost only
+USE_HTTPS=0
 SSH_PORT=""
 
 usage() {
@@ -44,6 +45,8 @@ Options:
   --panel-port N    Panel port (default 8777).
   --panel-open CIDR Expose the panel to this IP/range (e.g. 1.2.3.4/32).
                     Omit to keep it on localhost, reachable via SSH tunnel.
+  --https           Serve the panel over TLS with a self-signed certificate,
+                    so the secret path is not sent in clear text.
   --ssh-port N      SSH port to keep open in the firewall (auto-detected).
   -h, --help        This help.
 EOF
@@ -56,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --sni) SNI=$2; shift 2 ;;
     --panel-port) PANEL_PORT=$2; shift 2 ;;
     --panel-open) PANEL_OPEN=$2; shift 2 ;;
+    --https) USE_HTTPS=1; shift ;;
     --ssh-port) SSH_PORT=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
@@ -126,8 +130,18 @@ NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
+# The panel reads the short-lived traffic log from here; /run is RAM.
+ReadWritePaths=/run/ipiran
+UMask=0022
 [Install]
 WantedBy=multi-user.target
+EOF
+
+# RAM-backed directory for the ephemeral traffic monitor. Group-writable by
+# the panel so it can read the log and delete it when the window closes,
+# even though Xray (root) owns the file.
+cat > /etc/tmpfiles.d/ipiran.conf <<EOF
+d /run/ipiran 0770 root ${PANEL_USER} -
 EOF
 
 head1 "3/7  pick + verify REALITY camouflage host"
@@ -182,6 +196,8 @@ python3 -c 'import sqlite3,http.server,json,urllib.parse' \
   || die "this Python is missing stdlib modules; install python3 properly."
 id -u "$PANEL_USER" >/dev/null 2>&1 \
   || useradd --system --home-dir "$PREFIX" --shell /usr/sbin/nologin "$PANEL_USER"
+systemd-tmpfiles --create /etc/tmpfiles.d/ipiran.conf 2>/dev/null \
+  || install -d -m 0770 -o root -g "$PANEL_USER" /run/ipiran
 install -d -m 0755 "$PREFIX"
 rm -rf "$PREFIX/panel"
 cp -a "$SELF_DIR/panel" "$PREFIX/panel"
@@ -213,6 +229,25 @@ head1 "5/7  configuration + keys"
 SECRET=""
 [[ -r $ENV_FILE ]] && SECRET=$(sed -n 's/^IPIRAN_SECRET_PATH=//p' "$ENV_FILE")
 [[ -n $SECRET ]] || SECRET=$(python3 -c 'import secrets; print(secrets.token_urlsafe(16))')
+# Optional TLS. Without it the secret path, which is the only key to the
+# panel, travels in clear text across the operator's network.
+TLS_LINES=""
+if [[ $USE_HTTPS -eq 1 ]]; then
+  command -v openssl >/dev/null || die "--https needs openssl installed."
+  install -d -m 0750 -o root -g "$PANEL_USER" /etc/ipiran/tls
+  if [[ ! -s /etc/ipiran/tls/panel.crt ]]; then
+    SAN="DNS:${HOST}"
+    [[ $HOST =~ ^[0-9.]+$ ]] && SAN="IP:${HOST}"
+    openssl req -x509 -newkey rsa:2048 -sha256 -days 1095 -nodes \
+      -keyout /etc/ipiran/tls/panel.key -out /etc/ipiran/tls/panel.crt \
+      -subj "/CN=${HOST}" -addext "subjectAltName=${SAN}" 2>/dev/null \
+      || die "could not generate the panel certificate."
+  fi
+  chown root:"$PANEL_USER" /etc/ipiran/tls/panel.key /etc/ipiran/tls/panel.crt
+  chmod 0640 /etc/ipiran/tls/panel.key
+  TLS_LINES=$'IPIRAN_TLS_CERT=/etc/ipiran/tls/panel.crt\nIPIRAN_TLS_KEY=/etc/ipiran/tls/panel.key'
+fi
+
 cat > "$ENV_FILE" <<EOF
 IPIRAN_DATA_DIR=${DATA_DIR}
 IPIRAN_HOST=$( [[ -n $PANEL_OPEN ]] && echo 0.0.0.0 || echo 127.0.0.1 )
@@ -223,6 +258,7 @@ IPIRAN_XRAY_CONFIG=${XRAY_CONF_DIR}/config.json
 IPIRAN_XRAY_API=127.0.0.1:10085
 IPIRAN_XRAY_SERVICE=xray
 XRAY_LOCATION_ASSET=${XRAY_ASSETS}
+${TLS_LINES}
 EOF
 chmod 0640 "$ENV_FILE"; chown root:"$PANEL_USER" "$ENV_FILE"
 
@@ -293,14 +329,23 @@ ufw --force enable >/dev/null
 log "firewall active"
 
 head1 "done"
+SCHEME=$( [[ $USE_HTTPS -eq 1 ]] && echo https || echo http )
 if [[ -n $PANEL_OPEN ]]; then
   cat <<EOF
 Panel URL (bookmark it, the secret path is the only key):
 
-  http://${HOST}:${PANEL_PORT}/${SECRET}/
+  ${SCHEME}://${HOST}:${PANEL_PORT}/${SECRET}/
 
-Open it only from ${PANEL_OPEN}. Anyone else sees an empty server.
 EOF
+  if [[ $USE_HTTPS -eq 1 ]]; then
+    echo "The certificate is self-signed, so the browser warns once. Check that"
+    echo "the fingerprint it shows matches this before you accept it:"
+    echo
+    echo "  $(openssl x509 -in /etc/ipiran/tls/panel.crt -noout -fingerprint -sha256 | cut -d= -f2)"
+  else
+    warn "This is plain HTTP, so the secret path is visible to anyone watching"
+    warn "the network. Re-run with --https to encrypt it."
+  fi
 else
   cat <<EOF
 The panel listens on localhost only. From your own machine run:
@@ -309,8 +354,9 @@ The panel listens on localhost only. From your own machine run:
 
 then open:
 
-  http://127.0.0.1:${PANEL_PORT}/${SECRET}/
+  ${SCHEME}://127.0.0.1:${PANEL_PORT}/${SECRET}/
 EOF
 fi
 echo
+echo "If you ever rotate the secret path, get the current URL with: ipiranctl url"
 echo "Add clients in the panel, or: ipiranctl add-client \"name\" --quota-gb 20 --expire-days 30"
