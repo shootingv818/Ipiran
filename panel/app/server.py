@@ -43,6 +43,28 @@ class Panel(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self._conn = db.connect()
         self._hits: dict[str, list] = defaultdict(lambda: [0, 0.0])
+        self.ssl_ctx: ssl.SSLContext | None = None
+
+    def get_request(self):
+        """Accept a connection and, for TLS, defer the handshake to the
+        worker thread. Wrapping the *listening* socket would run every TLS
+        handshake inside this single accept loop, so one client that opened a
+        socket and stalled (sitting on the cert warning, a half-open scan)
+        would freeze the whole panel. Here the raw TCP accept returns
+        immediately and the handshake happens per-connection, under a
+        timeout, in its own thread."""
+        sock, addr = self.socket.accept()
+        sock.settimeout(30)
+        if self.ssl_ctx is not None:
+            sock = self.ssl_ctx.wrap_socket(
+                sock, server_side=True, do_handshake_on_connect=False
+            )
+        return sock, addr
+
+    def handle_error(self, request, client_address):
+        """A reset or a failed TLS handshake from a scanner is routine noise
+        here, not something worth a traceback in the journal."""
+        pass
 
     def db(self):
         """Serialize DB access; sqlite connection is shared across threads."""
@@ -257,7 +279,9 @@ def run() -> None:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(config.TLS_CERT, config.TLS_KEY)
-        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        # Handshake is done per-connection in get_request, not on the
+        # listening socket, so a stalled client cannot block the accept loop.
+        server.ssl_ctx = ctx
         scheme = "https"
 
     threading.Thread(target=_poller, args=(server,), daemon=True).start()
