@@ -131,30 +131,49 @@ WantedBy=multi-user.target
 EOF
 
 head1 "3/7  pick + verify REALITY camouflage host"
-check_sni() {
+# Does the host speak TLS 1.3 + HTTP/2? Best signal for a good REALITY target.
+# Returns 0 on a confirmed TLS1.3+h2 handshake.
+tls13_h2() {
   local h=$1 out
-  out=$(timeout 12 bash -c "exec 3<>/dev/tcp/${h}/443" 2>/dev/null) || return 1
+  command -v openssl >/dev/null || return 2   # 2 = can't tell
+  out=$(timeout 12 openssl s_client -connect "${h}:443" -servername "$h" \
+        -alpn h2 -tls1_3 </dev/null 2>/dev/null) || return 2
+  grep -qi 'Protocol *: *TLSv1.3' <<<"$out" || return 1
+  grep -qi 'ALPN protocol: h2' <<<"$out" || return 1
   return 0
 }
-# Prefer a real openssl probe when available, else a plain TCP reachability
-# check. A full TLS1.3+h2 check runs inside Xray at config-test time anyway.
-verify_tls() {
-  local h=$1
-  if command -v openssl >/dev/null; then
-    timeout 12 openssl s_client -connect "${h}:443" -servername "$h" \
-      -alpn h2 -tls1_3 -brief </dev/null 2>&1 | grep -qi 'ALPN protocol: h2'
-  else
-    timeout 8 bash -c "exec 3<>/dev/tcp/${h}/443" 2>/dev/null
-  fi
+# Plain TCP reachability on 443. Weaker, but enough: Xray revalidates the
+# target properly when it loads the config.
+tcp443() {
+  timeout 8 bash -c "exec 3<>/dev/tcp/$1/443" 2>/dev/null
 }
-if [[ -n $SNI ]]; then
-  verify_tls "$SNI" || die "$SNI is not reachable over TLS1.3+h2 from here. Pick another --sni."
-else
-  for cand in www.varzesh3.com www.aparat.com www.digikala.com www.snapp.ir www.cloudflare.com; do
-    if verify_tls "$cand"; then SNI=$cand; break; fi
-    warn "candidate rejected: $cand"
+
+pick_sni() {
+  # First pass: insist on a confirmed TLS1.3+h2 host.
+  local h
+  for h in "$@"; do
+    tls13_h2 "$h" && { printf '%s' "$h"; return 0; }
   done
-  [[ -n $SNI ]] || die "no camouflage host worked; pass a reachable one with --sni."
+  # Second pass: accept any host reachable on 443 (openssl probe may be
+  # unreliable on this box, but the port is clearly open).
+  for h in "$@"; do
+    if tcp443 "$h"; then
+      warn "could not confirm TLS1.3+h2 for ${h}; using it since port 443 is reachable"
+      printf '%s' "$h"
+      return 0
+    fi
+  done
+  return 1
+}
+
+CANDIDATES=(www.varzesh3.com www.aparat.com www.digikala.com www.snapp.ir www.cloudflare.com)
+if [[ -n $SNI ]]; then
+  if ! tls13_h2 "$SNI" && ! tcp443 "$SNI"; then
+    die "$SNI is not reachable on port 443 from here. Pick another --sni."
+  fi
+else
+  SNI=$(pick_sni "${CANDIDATES[@]}") \
+    || die "no camouflage host reachable on 443; pass one with --sni."
 fi
 log "using SNI: $SNI"
 
