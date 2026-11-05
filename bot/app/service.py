@@ -20,6 +20,24 @@ class ServiceError(RuntimeError):
     pass
 
 
+# Online counts come from an `xray api` subprocess; cache them briefly so
+# every button press in the bot does not pay for a fresh spawn.
+_online_cache: dict[str, int] = {}
+_online_ts: float = 0.0
+
+
+def _online(max_age: float = 10.0) -> dict[str, int]:
+    global _online_cache, _online_ts
+    if time.monotonic() - _online_ts < max_age:
+        return _online_cache
+    try:
+        _online_cache = xray.online_counts()
+    except xray.XrayError:
+        _online_cache = {}
+    _online_ts = time.monotonic()
+    return _online_cache
+
+
 # --------------------------------------------------------------------------
 # users
 # --------------------------------------------------------------------------
@@ -176,10 +194,7 @@ def set_server_enabled(conn: sqlite3.Connection, tag: str, enabled: bool) -> Non
 
 def dashboard(conn: sqlite3.Connection) -> dict[str, Any]:
     s = db.all_settings(conn)
-    try:
-        online = xray.online_counts()
-    except xray.XrayError:
-        online = {}
+    online = _online()
     now = int(time.time())
     today = time.strftime("%Y-%m-%d", time.gmtime(now))
     month = today[:7]
@@ -245,8 +260,11 @@ def poll(conn: sqlite3.Connection) -> dict[str, Any]:
             " ON CONFLICT(user_id,day) DO UPDATE SET up_bytes=up_bytes+excluded.up_bytes,"
             " down_bytes=down_bytes+excluded.down_bytes",
             (row["id"], today, amt["up"], amt["down"]))
+    global _online_cache, _online_ts
     try:
-        for email in xray.online_counts():
+        _online_cache = xray.online_counts()
+        _online_ts = time.monotonic()
+        for email in _online_cache:
             conn.execute("UPDATE users SET last_seen=? WHERE email=?", (now, email))
     except xray.XrayError:
         pass

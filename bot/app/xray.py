@@ -86,6 +86,10 @@ def _iran_outbound(srv: dict[str, Any]) -> dict[str, Any]:
                 "publicKey": srv["public_key"],
                 "shortId": srv.get("short_id", ""),
             },
+            # Server-to-server hop: TCP Fast Open saves a round trip per new
+            # connection. Harmless if the exit doesn't support it (falls back
+            # to a normal handshake). The installer sets net.ipv4.tcp_fastopen.
+            "sockopt": {"tcpFastOpen": True},
         },
     }
 

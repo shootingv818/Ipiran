@@ -12,7 +12,7 @@ import sqlite3
 import time
 from typing import Any
 
-from . import db, xray
+from . import xray
 
 
 def tcp_latency(host: str, port: int, timeout: float = 4.0):

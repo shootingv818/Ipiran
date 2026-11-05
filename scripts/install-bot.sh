@@ -186,9 +186,11 @@ EnvironmentFile=${ENV_FILE}
 ExecStart=/usr/bin/python3 -m app.bot
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=true
+# NoNewPrivileges is intentionally NOT set: the bot needs one sudo command
+# (systemctl restart xray), which that flag would block.
 ProtectSystem=full
 ProtectHome=true
+PrivateTmp=true
 ReadWritePaths=${DATA_DIR} ${XRAY_CONF_DIR}
 [Install]
 WantedBy=multi-user.target

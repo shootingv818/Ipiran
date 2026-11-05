@@ -64,8 +64,9 @@ class Telegram:
                      keyboard: list | None = None,
                      parse_mode: str = "Markdown") -> dict[str, Any]:
         params: dict[str, Any] = {"chat_id": chat_id, "text": text,
-                                  "parse_mode": parse_mode,
                                   "disable_web_page_preview": True}
+        if parse_mode:
+            params["parse_mode"] = parse_mode
         if keyboard is not None:
             params["reply_markup"] = {"inline_keyboard": keyboard}
         return self._call("sendMessage", params)
