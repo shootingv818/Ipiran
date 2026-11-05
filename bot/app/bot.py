@@ -194,7 +194,16 @@ def _route(tg, conn, chat, mid, data: str) -> None:
         return tg.edit_message(chat, mid, ui._mono(f"حذف سرور {tag}؟"), kb)
     if data.startswith("srv_delok:"):
         tag = data.split(":", 1)[1]
-        service.remove_iran_server(conn, tag)
+        stale = service.remove_iran_server(conn, tag)
+        if stale:
+            tg.send_message(
+                chat,
+                "⚠️ این آخرین سرور فعال بود. چون بدون هیچ سرور نمی‌شود کانفیگ "
+                "ساخت، Xray با تنظیمات قبلی (شامل همین سرور حذف‌شده) به کار "
+                "خودش ادامه می‌دهد تا یک سرور جدید اضافه کنی؛ آن‌وقت خودکار "
+                "به‌روز می‌شود.",
+                parse_mode=None,
+            )
         return show(ui.servers_list(service.dashboard(conn)))
 
 

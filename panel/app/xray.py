@@ -200,8 +200,7 @@ def restart() -> None:
     """Restart Xray. Needed for structural changes (keys, port, SNI).
     Client add/remove is applied live and does not come through here."""
     import os
-    cmd = [config.XRAY_SERVICE_RESTART] if hasattr(config, "XRAY_SERVICE_RESTART") \
-        else ["systemctl", "restart", config.XRAY_SERVICE]
+    cmd = ["systemctl", "restart", config.XRAY_SERVICE]
     if os.geteuid() != 0:
         cmd = ["sudo", "-n", *cmd]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)

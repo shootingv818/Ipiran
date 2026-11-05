@@ -68,21 +68,69 @@ done
 
 [[ $EUID -eq 0 ]] || die "run as root (sudo)."
 command -v apt-get >/dev/null || die "this installer targets Ubuntu/Debian."
+# A bare VPS is still expected to be a normal Ubuntu/Debian cloud image with
+# systemd as PID 1 (every mainstream provider ships this). Catch anything
+# else here with a clear message instead of failing confusingly later at
+# the first `systemctl` call.
+command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]] \
+  || die "this server is not running systemd as PID 1 (no /run/systemd/system). This installer manages services with systemctl and needs a normal Ubuntu/Debian VPS, not a minimal container or chroot."
 [[ -n $HOST ]] || { usage; die "--host is required."; }
 
 SELF_DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 [[ -d $SELF_DIR/panel ]] || die "cannot find the panel/ directory next to this script."
 
-if [[ -z $SSH_PORT ]]; then
-  SSH_PORT=$(sed -n 's/^[[:space:]]*Port[[:space:]]\+\([0-9]\+\).*/\1/p' \
-             /etc/ssh/sshd_config 2>/dev/null | head -1)
-  SSH_PORT=${SSH_PORT:-22}
+# Collects every port sshd actually listens on (it can have more than one
+# "Port" line), checking the live socket first, then the main config, then
+# Ubuntu 22.04+ style drop-ins under sshd_config.d/ that the main file often
+# does not mention at all. Getting this wrong and then resetting the
+# firewall is how an installer locks someone out of their own server.
+collect_ssh_ports() {
+  local -n _out=$1
+  local p
+  if command -v ss >/dev/null; then
+    while read -r p; do
+      [[ $p =~ ^[0-9]+$ ]] && _out+=("$p")
+    done < <(ss -ltnp 2>/dev/null | awk '/sshd/ {n=split($4,a,":"); print a[n]}')
+  fi
+  if [[ ${#_out[@]} -eq 0 ]]; then
+    local files=(/etc/ssh/sshd_config)
+    for f in /etc/ssh/sshd_config.d/*.conf; do
+      [[ -f $f ]] && files+=("$f")
+    done
+    while read -r p; do
+      [[ $p =~ ^[0-9]+$ ]] && _out+=("$p")
+    done < <(cat "${files[@]}" 2>/dev/null \
+              | sed -n 's/^[[:space:]]*Port[[:space:]]\+\([0-9]\+\).*/\1/p')
+  fi
+  if [[ ${#_out[@]} -eq 0 ]]; then
+    _out=(22)
+  fi
+}
+
+SSH_PORTS=()
+if [[ -n $SSH_PORT ]]; then
+  SSH_PORTS=("$SSH_PORT")
+else
+  collect_ssh_ports SSH_PORTS
 fi
+log "SSH port(s) to keep open: ${SSH_PORTS[*]}"
 
 head1 "1/7  packages"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq --no-install-recommends curl unzip ca-certificates python3 ufw
+apt-get update -qq \
+  || die "apt-get update failed; check this server's network and apt mirrors."
+# A genuinely bare server may have none of this preinstalled:
+#   curl, ca-certificates  - fetch and verify Xray
+#   unzip                  - unpack it
+#   python3                - runs the panel (stdlib only, nothing from PyPI)
+#   ufw                    - firewall
+#   openssl                - the REALITY/TLS probe, and required by --https
+#   sudo                   - the panel drops root and calls back via
+#                             `sudo -n systemctl restart xray`; also used
+#                             below (sudo -u, visudo) during this install
+apt-get install -y -qq --no-install-recommends \
+  curl unzip ca-certificates python3 ufw openssl sudo \
+  || die "package installation failed; see the apt-get output above."
 
 head1 "2/7  install Xray (checksum-verified)"
 case "$(uname -m)" in
@@ -90,9 +138,25 @@ case "$(uname -m)" in
   aarch64|arm64) ASSET=Xray-linux-arm64-v8a.zip ;;
   *) die "unsupported CPU: $(uname -m)" ;;
 esac
-VER=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest \
+# Unauthenticated api.github.com calls are capped at 60/hour per source IP.
+# A cheap VPS can share that IP with many other tenants on the same NAT
+# gateway, so fall back to the plain releases/latest redirect (not subject
+# to the same limit) if the API call comes back empty.
+latest_xray_version() {
+  local v
+  v=$(curl -fsSL --max-time 15 \
+      https://api.github.com/repos/XTLS/Xray-core/releases/latest 2>/dev/null \
       | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
-[[ -n $VER ]] || die "could not find the latest Xray version."
+  if [[ -z $v ]]; then
+    v=$(curl -s --max-time 15 -o /dev/null -w '%{redirect_url}' \
+        https://github.com/XTLS/Xray-core/releases/latest 2>/dev/null \
+        | sed -n 's#.*/tag/##p')
+  fi
+  printf '%s' "$v"
+}
+VER=$(latest_xray_version)
+[[ -n $VER ]] \
+  || die "could not find the latest Xray version (api.github.com and the releases redirect both failed; check this server's network)."
 if "$XRAY_BIN" version 2>/dev/null | head -1 | grep -q "${VER#v}"; then
   log "Xray ${VER} already present."
 else
@@ -327,7 +391,9 @@ head1 "7/7  firewall"
 ufw --force reset >/dev/null 2>&1 || true
 ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
-ufw allow "$SSH_PORT"/tcp >/dev/null
+for p in "${SSH_PORTS[@]}"; do
+  ufw allow "$p"/tcp >/dev/null
+done
 ufw allow "$PORT"/tcp >/dev/null
 if [[ -n $PANEL_OPEN ]]; then
   ufw allow from "$PANEL_OPEN" to any port "$PANEL_PORT" proto tcp >/dev/null
@@ -373,3 +439,7 @@ fi
 echo
 echo "If you ever rotate the secret path, get the current URL with: ipiranctl url"
 echo "Add clients in the panel, or: ipiranctl add-client \"name\" --quota-gb 20 --expire-days 30"
+echo
+echo "If a port still looks closed from outside despite ufw allowing it, also"
+echo "check your hosting provider's own control-panel firewall / security"
+echo "group; that sits in front of the OS and ufw cannot see or open it."

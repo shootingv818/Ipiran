@@ -159,7 +159,15 @@ def add_iran_server(conn: sqlite3.Connection, link: str,
     return row
 
 
-def remove_iran_server(conn: sqlite3.Connection, tag: str) -> None:
+def remove_iran_server(conn: sqlite3.Connection, tag: str) -> bool:
+    """Deletes the server. Returns True if the running Xray config was left
+    stale: build_config() requires at least one enabled server, so if this
+    was the last one, rebuilding would just raise and there is nothing
+    sensible to replace it with. Xray keeps running its last-known-good
+    config (including the now-deleted server) until a new one is added, at
+    which point the next add_iran_server() rebuilds normally. The caller is
+    expected to surface this to the operator; it is not silent on its own.
+    """
     row = conn.execute("SELECT 1 FROM iran_servers WHERE tag = ?", (tag,)).fetchone()
     if not row:
         raise ServiceError("چنین سروری نیست.")
@@ -170,7 +178,8 @@ def remove_iran_server(conn: sqlite3.Connection, tag: str) -> None:
     conn.execute("DELETE FROM server_health WHERE tag = ?", (tag,))
     if remaining > 0:
         rebuild(conn)
-    # If it was the last one, leave the old config running; the bot warns.
+        return False
+    return True
 
 
 def set_server_enabled(conn: sqlite3.Connection, tag: str, enabled: bool) -> None:
