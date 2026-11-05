@@ -78,20 +78,31 @@ def home(d: dict[str, Any]) -> tuple[str, list]:
     return text, kb
 
 
-def server_line(s: dict[str, Any]) -> str:
+def _status_text(s: dict[str, Any]) -> str:
+    """The status phrase for a server, without the dot or label."""
     h = s.get("health", {})
     if not s["enabled"]:
-        dot, extra = "⚪", "غیرفعال"
-    elif h.get("ok"):
-        dot = "🟢"
-        extra = f"{fa(h.get('latency_ms'))}ms" if h.get("latency_ms") is not None else "سالم"
-        if h.get("selected"):
-            extra += " ◄ فعال"
-    elif h.get("reachable"):
-        dot, extra = "🟡", (h.get("detail") or "خارج از مسیر")
-    else:
-        dot, extra = "🔴", "مسدود/قطع"
-    return f"{dot} {s['label']}  {extra}"
+        return "غیرفعال"
+    if h.get("ok"):
+        base = (f"{fa(h.get('latency_ms'))}ms" if h.get("latency_ms") is not None
+                else "سالم")
+        return base + (" ◄ فعال" if h.get("selected") else "")
+    if h.get("reachable"):
+        return h.get("detail") or "خارج از مسیر"
+    return "مسدود/قطع"
+
+
+def _status_dot(s: dict[str, Any]) -> str:
+    h = s.get("health", {})
+    if not s["enabled"]:
+        return "⚪"
+    if h.get("ok"):
+        return "🟢"
+    return "🟡" if h.get("reachable") else "🔴"
+
+
+def server_line(s: dict[str, Any]) -> str:
+    return f"{_status_dot(s)} {s['label']}  {_status_text(s)}"
 
 
 def users_list(d: dict[str, Any], page: int = 0, per: int = 6) -> tuple[str, list]:
@@ -184,7 +195,7 @@ def server_detail(s: dict[str, Any]) -> tuple[str, list]:
         f"🇮🇷 {s['label']}  ({s['tag']})", RULE,
         f"آدرس: {s['address']}:{fa(s['port'])}",
         f"SNI: {s['sni']}",
-        f"وضعیت: {server_line(s).split('  ', 1)[-1] if '  ' in server_line(s) else '—'}",
+        f"وضعیت: {_status_text(s)}",
         f"تأخیر: {fa(h.get('latency_ms')) + 'ms' if h.get('latency_ms') is not None else '—'}",
         RULE,
     ]

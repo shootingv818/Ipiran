@@ -83,13 +83,16 @@ def _on_callback(tg: Telegram, cq: dict) -> None:
     chat = cq["message"]["chat"]["id"]
     mid = cq["message"]["message_id"]
     tg.answer_callback(cq["id"])
+    # Pressing any button cancels a half-started text prompt, so the next
+    # thing the owner types is never mistaken for a server link or a name.
+    _pending.pop("action", None)
     conn = db.connect()
     try:
         _route(tg, conn, chat, mid, data)
     except (service.ServiceError, links.LinkError) as exc:
-        tg.send_message(chat, f"⚠️ {exc}")
+        tg.send_message(chat, f"⚠️ {exc}", parse_mode=None)
     except Exception as exc:  # noqa: BLE001
-        tg.send_message(chat, f"خطا: {exc}")
+        tg.send_message(chat, f"خطا: {exc}", parse_mode=None)
         traceback.print_exc()
     finally:
         conn.close()
@@ -208,7 +211,7 @@ def _do_new_user(tg: Telegram, chat: int, text: str) -> None:
         t, kb = _user_screen(conn, user["id"])
         tg.send_message(chat, t, kb)
     except (service.ServiceError, links.LinkError) as exc:
-        tg.send_message(chat, f"⚠️ {exc}")
+        tg.send_message(chat, f"⚠️ {exc}", parse_mode=None)
     finally:
         conn.close()
 
@@ -217,13 +220,14 @@ def _do_add_server(tg: Telegram, chat: int, text: str) -> None:
     conn = db.connect()
     try:
         srv = service.add_iran_server(conn, text)
-        tg.send_message(chat, f"✅ سرور «{srv['label']}» ({srv['tag']}) اضافه و فعال شد.")
+        tg.send_message(chat, f"✅ سرور «{srv['label']}» ({srv['tag']}) اضافه و فعال شد.",
+                        parse_mode=None)
         t, kb = ui.servers_list(service.dashboard(conn))
         tg.send_message(chat, t, kb)
     except (service.ServiceError, links.LinkError) as exc:
-        tg.send_message(chat, f"⚠️ {exc}")
+        tg.send_message(chat, f"⚠️ {exc}", parse_mode=None)
     except Exception as exc:  # noqa: BLE001
-        tg.send_message(chat, f"خطا در افزودن سرور: {exc}")
+        tg.send_message(chat, f"خطا در افزودن سرور: {exc}", parse_mode=None)
     finally:
         conn.close()
 
