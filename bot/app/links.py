@@ -56,7 +56,10 @@ def client_link(conn: sqlite3.Connection, user: dict[str, Any]) -> str:
     s = db.all_settings(conn)
     host = s.get("public_host")
     if not host:
-        raise LinkError("آدرس سرور خارجی تنظیم نشده. اول /setup را کامل کن.")
+        raise LinkError(
+            "آدرس سرور خارجی (public_host) تنظیم نشده. روی سرور بزن: "
+            "ipsazctl set public_host <آیپی-سرور-خارجی>"
+        )
     if not s.get("reality_public_key"):
         raise LinkError("کلید REALITY ساخته نشده.")
 

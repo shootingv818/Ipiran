@@ -51,7 +51,9 @@ def home(d: dict[str, Any]) -> tuple[str, list]:
     lines = [f"🌐 {d['title']} — پنل آیپی ایران", RULE]
     if not d["configured"]:
         lines += ["⚠️ هنوز کامل تنظیم نشده.",
-                  "دکمه‌ی «راه‌اندازی» را بزن.", RULE]
+                  "در «⚙️ تنظیمات» کلید REALITY را بساز. اگر آیپی سرور هم",
+                  "تنظیم نشده، روی سرور بزن: ipsazctl set public_host <IP>",
+                  RULE]
     healthy = sum(1 for s in d["servers"] if s.get("health", {}).get("ok"))
     total = len(d["servers"])
     lines += [
